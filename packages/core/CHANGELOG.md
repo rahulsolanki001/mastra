@@ -1,5 +1,205 @@
 # @mastra/core
 
+## 1.38.0-alpha.3
+
+### Minor Changes
+
+- Added `agent.sendMessage()` and `agent.queueMessage()` APIs for sending user-authored input into agent threads. These are intended to be used with `agent.subscribeToThread()` and replace lower-level `agent.sendSignal()` calls for regular user messages. ([#17191](https://github.com/mastra-ai/mastra/pull/17191))
+
+  ```ts
+  await agent.sendMessage('Continue with the latest user input', { resourceId, threadId });
+  await agent.queueMessage('Follow up after the active turn finishes', { resourceId, threadId });
+
+  await agent.sendMessage(
+    {
+      contents: [
+        { type: 'text', text: 'What is in this image?' },
+        { type: 'file', data: imageBase64, mediaType: 'image/png', filename: 'screenshot.png' },
+      ],
+    },
+    { resourceId, threadId },
+  );
+  ```
+
+- Added the `tool_provider_connections` storage domain. Stored agents can now persist per-agent ToolProvider config that round-trips on read/write/create. Runtime connection resolution (per-author, shared, caller-supplied) ships in a follow-up PR. ([#17247](https://github.com/mastra-ai/mastra/pull/17247))
+
+  **What you can do**
+  - Pin a connection on a stored agent's config and have it round-trip on read/write/create.
+  - Persist multiple connections per toolkit so a follow-up runtime PR can fan-out to the right one at execution time.
+
+  **Example**
+
+  ```ts
+  import { LibSQLStore } from '@mastra/libsql';
+
+  const storage = new LibSQLStore({ url: process.env.DATABASE_URL });
+
+  // Persist an OAuth connection that an agent can pin later
+  await storage.toolProviders.upsertConnection({
+    authorId: 'user-123',
+    providerId: 'composio',
+    connectionId: 'auth_abc',
+    toolkit: 'gmail',
+    label: 'Work inbox',
+    scope: 'per-author',
+  });
+
+  // List a user's own connections (admin can omit authorId to list across users)
+  const { items } = await storage.toolProviders.listConnectionsByAuthor({
+    authorId: 'user-123',
+    providerId: 'composio',
+  });
+  ```
+
+  Additive — existing stored agents continue to work unchanged. The runtime that consumes this domain ships in a follow-up PR.
+
+  PR 1 of 3 split from #17224.
+
+- Add fire-and-forget workflow resume that returns immediately with `{ runId }` without awaiting the run output. ([#17230](https://github.com/mastra-ai/mastra/pull/17230))
+
+  For `@mastra/inngest`, this skips the `getRunOutput()` polling that previously raced a realtime subscription against the Inngest runs API and could surface spurious 404s even though the durable workflow was running fine.
+  - `Run.resumeAsync()` added to core: dispatches the resume in the background and returns `{ runId }` immediately. Engines that poll for results (Inngest) override it to skip polling entirely.
+  - `InngestRun.resumeAsync()` sends the resume event and returns `{ runId }`, skipping polling. Send-time failures (bad payload, event send failure) still reject synchronously and roll back the snapshot.
+  - New `POST /workflows/:workflowId/resume-no-wait` and `POST /agent-builder/:actionId/resume-no-wait` routes return `{ runId }` immediately.
+  - New client SDK `run.resumeNoWait()` resolves with `{ runId }`.
+
+  The existing `resumeAsync()` client/server surface is unchanged and still resolves with the full workflow result, so there is no breaking change.
+
+  `resumeNoWait` is intentionally additive in v1. In Mastra v2 the fire-and-forget behavior is planned to become the default behavior of `resumeAsync()` (mirroring `start`/`resume` semantics), at which point `resumeNoWait` and the `resume-no-wait` routes will be removed. The code paths carry `TODO(v2)` comments documenting this consolidation.
+
+- Add per-entity file persistence and per-entity git history to `FilesystemVersionedHelpers`. ([#17225](https://github.com/mastra-ai/mastra/pull/17225))
+
+  `FilesystemVersionedHelpers` now accepts three optional hooks that let a storage
+  domain split a published entity across many per-entity JSON files (e.g.
+  `agents/<id>.json`) instead of one shared map file:
+  - `perEntityFilesDir` — directory (under the FilesystemDB root) for per-entity files.
+  - `shouldPersistToPerEntityFile(entity)` — decide per published entity whether
+    to write its snapshot to a per-entity file.
+  - `perEntitySnapshotFilter(snapshot, entity)` — filter the snapshot before
+    writing it to the per-entity file (e.g. drop fields the user does not own).
+
+  When configured, the helper:
+  - Reads per-entity files on hydrate (alongside the shared map file).
+  - Writes published snapshots to per-entity files with stable alphabetical key
+    ordering for friendly diffs.
+  - Walks per-entity file git history and surfaces each commit as a read-only
+    version in `listVersions` (in addition to the existing shared-file git
+    history).
+  - Skips writing an empty shared map file when every published entity is
+    persisted to per-entity files, so a code-only project does not end up with an
+    empty stub committed to git.
+
+  Also adds `FilesystemDB.listDomainFiles`, `domainFileExists`, and
+  `removeDomainFile` helpers, and broadens `GitHistory.getFileAtCommit` to be
+  generic so callers can request a per-entity snapshot type rather than the
+  shared-map shape.
+
+  Example — configure a domain to persist each entity to its own file:
+
+  ```typescript
+  import { FilesystemDB, FilesystemVersionedHelpers } from '@mastra/core/storage';
+
+  const db = new FilesystemDB('./mastra/editor');
+
+  // Entities that should be persisted as their own files.
+  const codeModeEntityIds = new Set(['support-bot']);
+
+  const agents = new FilesystemVersionedHelpers({
+    db,
+    entitiesFile: 'agents.json',
+    parentIdField: 'agentId',
+    name: 'agents',
+    versionMetadataFields: ['id', 'agentId', 'versionNumber', 'createdAt'],
+    // New per-entity hooks:
+    perEntityFilesDir: 'agents',
+    // Decide per entity whether it gets its own file (vs. the shared agents.json).
+    shouldPersistToPerEntityFile: entity => codeModeEntityIds.has(entity.id),
+    // Drop fields that should not live in the per-entity file.
+    perEntitySnapshotFilter: snapshot => {
+      const { model, ...userOwned } = snapshot;
+      return userOwned;
+    },
+  });
+
+  // Published snapshots are now written to ./mastra/editor/agents/<id>.json,
+  // and each git commit to those files shows up as a read-only version.
+  const versions = await agents.listVersions({ agentId: 'support-bot' }, 'agentId');
+  ```
+
+- Added the `disableInit` option to the `MastraVector` base class. When set to `true`, vector stores skip creating schemas, extensions, tables, and indexes at application startup. This matches the existing `disableInit` behavior on storage adapters and is useful for deployments where schemas and indexes are created ahead of time by a privileged database role, while the application runs with a least-privilege role. ([#17272](https://github.com/mastra-ai/mastra/pull/17272))
+
+  **Usage**
+
+  ```typescript
+  const vector = new PgVector({
+    id: 'vectors',
+    connectionString: process.env.DATABASE_URL,
+    disableInit: true,
+  });
+  ```
+
+  The `MASTRA_DISABLE_STORAGE_INIT` environment variable also disables vector init, so a single flag prevents both storage and vector stores from creating schemas, tables, or indexes at startup.
+
+- Storage adapters can now receive a narrow back-pointer to the Mastra instance ([#17226](https://github.com/mastra-ai/mastra/pull/17226))
+  via `MastraCompositeStore.__registerMastra`. This mirrors the existing
+  registration pattern on agents, workflows, memory, scorers and processors,
+  and lets a storage domain look up agents and editor config without pulling
+  the full Mastra type into the storage layer (which would create a circular
+  import).
+
+  The reference is cascaded automatically to any parent composites and owned
+  domain stores, and is wired both during Mastra construction and via
+  `setStorage`. The editor is registered after storage so editor-driven
+  storage overlays observe the assigned storage.
+
+  A new `StorageMastraRef` interface exposes only the methods storage needs
+  today (`getAgentById`, `getEditor`).
+
+  ```ts
+  // Inside a domain store, read the registered reference after Mastra wires it up:
+  class MyAgentsStore extends AgentsStorage {
+    protected getEditorConfig(agentId: string) {
+      // `this.mastra` is populated by MastraCompositeStore.__registerMastra,
+      // which runs during Mastra construction and on setStorage().
+      const agent = this.mastra?.getAgentById?.(agentId);
+      if (agent?.source !== 'code') return undefined;
+      return agent.__getEditorConfig?.();
+    }
+  }
+  ```
+
+### Patch Changes
+
+- Fixed UnixSocketPubSub streaming so a slow or stuck subscriber no longer blocks active local streams or other subscribers. ([#17302](https://github.com/mastra-ai/mastra/pull/17302))
+
+- Fixed resumed agent observability spans so `agent.resumeStream()` and `agent.resumeGenerate()` use the resume payload as the `AGENT_RUN` span input instead of an empty array. ([#17134](https://github.com/mastra-ai/mastra/pull/17134))
+
+  Resumed spans now also link back to the suspended trace when persisted tracing context is available, so human-in-the-loop approval flows show the decision payload and remain connected in tracing backends. Fixes #17075.
+
+- Fixed processor-returned `systemMessages` wiping tagged system messages owned by other processors (e.g. observational memory). Processor `args.systemMessages` now exposes only the untagged system message bucket, so tagged messages owned by other processors are no longer round-tripped through the replacement API. `MessageList.replaceAllSystemMessages()` replaces only the untagged bucket and leaves tagged buckets intact. Final model input still receives both via `messageList.getAllSystemMessages()`. ([#16950](https://github.com/mastra-ai/mastra/pull/16950))
+
+- Use `queueMessage()` for Harness follow-up scheduling while preserving queued follow-up display state. ([#17191](https://github.com/mastra-ai/mastra/pull/17191))
+
+- Removed a stale AI SDK UI utils dependency from @mastra/core so projects using Zod 4 do not get Zod 3 peer dependency warnings from core. ([#16994](https://github.com/mastra-ai/mastra/pull/16994))
+
+- Fixed AGENT_RUN spans not closing when an agent stream is aborted mid-flight (e.g. browser disconnect or `AbortController.abort()`). Aborted runs now end with `{ status: 'aborted', reason: 'abort' }` so traces are exported to observability backends. ([#17203](https://github.com/mastra-ai/mastra/pull/17203))
+
+- Fixed read_file line ranges when offsets are past the end of a file ([#17275](https://github.com/mastra-ai/mastra/pull/17275))
+
+- Added native multimodal tool-result support. Core now converts MCP-style tool results with image and audio `content` parts into model-native media output when building model prompts, without requiring MCP tools to persist duplicate media payloads in `providerMetadata.mastra.modelOutput`. ([#16866](https://github.com/mastra-ai/mastra/pull/16866))
+
+  ```ts
+  return {
+    content: [
+      { type: 'text', text: 'Screenshot captured' },
+      { type: 'image', data: base64Png, mimeType: 'image/png' },
+    ],
+  };
+  ```
+
+- Updated dependencies [[`00eca42`](https://github.com/mastra-ai/mastra/commit/00eca4252393aa114dc8c9a5e1da68df91fa06cf)]:
+  - @mastra/schema-compat@1.2.11-alpha.0
+
 ## 1.38.0-alpha.2
 
 ### Minor Changes

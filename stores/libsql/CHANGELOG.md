@@ -1,5 +1,48 @@
 # @mastra/libsql
 
+## 1.12.0-alpha.0
+
+### Minor Changes
+
+- Added the `tool_provider_connections` storage domain. Stored agents can now persist per-agent ToolProvider config that round-trips on read/write/create. Runtime connection resolution (per-author, shared, caller-supplied) ships in a follow-up PR. ([#17247](https://github.com/mastra-ai/mastra/pull/17247))
+
+  **What you can do**
+  - Pin a connection on a stored agent's config and have it round-trip on read/write/create.
+  - Persist multiple connections per toolkit so a follow-up runtime PR can fan-out to the right one at execution time.
+
+  **Example**
+
+  ```ts
+  import { LibSQLStore } from '@mastra/libsql';
+
+  const storage = new LibSQLStore({ url: process.env.DATABASE_URL });
+
+  // Persist an OAuth connection that an agent can pin later
+  await storage.toolProviders.upsertConnection({
+    authorId: 'user-123',
+    providerId: 'composio',
+    connectionId: 'auth_abc',
+    toolkit: 'gmail',
+    label: 'Work inbox',
+    scope: 'per-author',
+  });
+
+  // List a user's own connections (admin can omit authorId to list across users)
+  const { items } = await storage.toolProviders.listConnectionsByAuthor({
+    authorId: 'user-123',
+    providerId: 'composio',
+  });
+  ```
+
+  Additive — existing stored agents continue to work unchanged. The runtime that consumes this domain ships in a follow-up PR.
+
+  PR 1 of 3 split from #17224.
+
+### Patch Changes
+
+- Updated dependencies [[`f07b646`](https://github.com/mastra-ai/mastra/commit/f07b64604ab7d25391179790b7fd4823df9e2dff), [`d8838ae`](https://github.com/mastra-ai/mastra/commit/d8838ae80b69780361693d27098f7f6684af12fe), [`0f0d1ba`](https://github.com/mastra-ai/mastra/commit/0f0d1ba67bfcb2204e571401662f1eceefc03357), [`95b14cd`](https://github.com/mastra-ai/mastra/commit/95b14cdd820e86d97ac05fe568424c513a252e31), [`aa36be2`](https://github.com/mastra-ai/mastra/commit/aa36be23aa513b7dc53cb8ca16b7fab8f20e43ad), [`d8838ae`](https://github.com/mastra-ai/mastra/commit/d8838ae80b69780361693d27098f7f6684af12fe), [`8bd16da`](https://github.com/mastra-ai/mastra/commit/8bd16da73a4cb874d739373643dbd6a6e7f88684), [`47f71dc`](https://github.com/mastra-ai/mastra/commit/47f71dc6fbcbd12d71e21a979e676e20a02bd77d), [`50ceae2`](https://github.com/mastra-ai/mastra/commit/50ceae270878e2f8fb2b2c6c2faab09df0007c8a), [`847ff1e`](https://github.com/mastra-ai/mastra/commit/847ff1e0d94368d94b2e173e4e0908e115568ef3), [`9e16c68`](https://github.com/mastra-ai/mastra/commit/9e16c6818b6485ccb43df28aba6f3a2219d28662), [`92ff509`](https://github.com/mastra-ai/mastra/commit/92ff5098ef8a990438ca038077021a5f7541ec1d), [`3fce5e7`](https://github.com/mastra-ai/mastra/commit/3fce5e70d011d289043e75003ef3336ed4aa43c3), [`a763592`](https://github.com/mastra-ai/mastra/commit/a763592c3db46963ef1011cfe16fe372816e775e)]:
+  - @mastra/core@1.38.0-alpha.3
+
 ## 1.11.1
 
 ### Patch Changes

@@ -1,5 +1,32 @@
 # @mastra/server
 
+## 1.38.0-alpha.3
+
+### Minor Changes
+
+- Add fire-and-forget workflow resume that returns immediately with `{ runId }` without awaiting the run output. ([#17230](https://github.com/mastra-ai/mastra/pull/17230))
+
+  For `@mastra/inngest`, this skips the `getRunOutput()` polling that previously raced a realtime subscription against the Inngest runs API and could surface spurious 404s even though the durable workflow was running fine.
+  - `Run.resumeAsync()` added to core: dispatches the resume in the background and returns `{ runId }` immediately. Engines that poll for results (Inngest) override it to skip polling entirely.
+  - `InngestRun.resumeAsync()` sends the resume event and returns `{ runId }`, skipping polling. Send-time failures (bad payload, event send failure) still reject synchronously and roll back the snapshot.
+  - New `POST /workflows/:workflowId/resume-no-wait` and `POST /agent-builder/:actionId/resume-no-wait` routes return `{ runId }` immediately.
+  - New client SDK `run.resumeNoWait()` resolves with `{ runId }`.
+
+  The existing `resumeAsync()` client/server surface is unchanged and still resolves with the full workflow result, so there is no breaking change.
+
+  `resumeNoWait` is intentionally additive in v1. In Mastra v2 the fire-and-forget behavior is planned to become the default behavior of `resumeAsync()` (mirroring `start`/`resume` semantics), at which point `resumeNoWait` and the `resume-no-wait` routes will be removed. The code paths carry `TODO(v2)` comments documenting this consolidation.
+
+- Add experimental HTTP message routes for agent threads. Servers now expose `POST /agents/:agentId/send-message` and `POST /agents/:agentId/queue-message` for message-first input while keeping `/agents/:agentId/signals` available for lower-level signals and compatibility. ([#17237](https://github.com/mastra-ai/mastra/pull/17237))
+
+### Patch Changes
+
+- Stored agent and skill POST, PATCH, and skill publish responses now include `isFavorited`, matching GET behavior. Clients can read favorite status from write responses without an extra GET request. ([#17246](https://github.com/mastra-ai/mastra/pull/17246))
+
+  Under auth-off, write responses also omit `favoriteCount` to match GET, so the response shape is consistent across all single-entity endpoints.
+
+- Updated dependencies [[`f07b646`](https://github.com/mastra-ai/mastra/commit/f07b64604ab7d25391179790b7fd4823df9e2dff), [`d8838ae`](https://github.com/mastra-ai/mastra/commit/d8838ae80b69780361693d27098f7f6684af12fe), [`0f0d1ba`](https://github.com/mastra-ai/mastra/commit/0f0d1ba67bfcb2204e571401662f1eceefc03357), [`95b14cd`](https://github.com/mastra-ai/mastra/commit/95b14cdd820e86d97ac05fe568424c513a252e31), [`aa36be2`](https://github.com/mastra-ai/mastra/commit/aa36be23aa513b7dc53cb8ca16b7fab8f20e43ad), [`d8838ae`](https://github.com/mastra-ai/mastra/commit/d8838ae80b69780361693d27098f7f6684af12fe), [`8bd16da`](https://github.com/mastra-ai/mastra/commit/8bd16da73a4cb874d739373643dbd6a6e7f88684), [`47f71dc`](https://github.com/mastra-ai/mastra/commit/47f71dc6fbcbd12d71e21a979e676e20a02bd77d), [`50ceae2`](https://github.com/mastra-ai/mastra/commit/50ceae270878e2f8fb2b2c6c2faab09df0007c8a), [`847ff1e`](https://github.com/mastra-ai/mastra/commit/847ff1e0d94368d94b2e173e4e0908e115568ef3), [`9e16c68`](https://github.com/mastra-ai/mastra/commit/9e16c6818b6485ccb43df28aba6f3a2219d28662), [`92ff509`](https://github.com/mastra-ai/mastra/commit/92ff5098ef8a990438ca038077021a5f7541ec1d), [`3fce5e7`](https://github.com/mastra-ai/mastra/commit/3fce5e70d011d289043e75003ef3336ed4aa43c3), [`a763592`](https://github.com/mastra-ai/mastra/commit/a763592c3db46963ef1011cfe16fe372816e775e)]:
+  - @mastra/core@1.38.0-alpha.3
+
 ## 1.38.0-alpha.2
 
 ### Minor Changes
